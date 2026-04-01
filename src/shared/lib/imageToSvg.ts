@@ -191,11 +191,10 @@ function minifySvg(svgString: string): string {
         name: 'preset-default',
         params: {
           overrides: {
-            // Keep viewBox — needed for correct scaling
             removeViewBox: false,
           },
         },
-      },
+      } as never,
       'removeXMLNS',
       'sortAttrs',
     ],
