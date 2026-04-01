@@ -1,0 +1,65 @@
+.wrapper {
+  position: relative;
+  min-height: 100vh;
+}
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: rgba(86, 91, 99, 0.08);
+  backdrop-filter: blur(2px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.overlayContent {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 48px 64px;
+  border: 2px dashed #565B63;
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.9);
+}
+
+.overlayContent p {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 500;
+  color: #565B63;
+}
+
+.hiddenInput {
+  display: none;
+}
+
+.content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.selectBtn {
+  margin-top: 16px;
+  padding: 10px 28px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #fff;
+  background: #565B63;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.15s, transform 0.1s;
+}
+
+.selectBtn:hover {
+  background: #44484f;
+}
+
+.selectBtn:active {
+  transform: scale(0.97);
+}
