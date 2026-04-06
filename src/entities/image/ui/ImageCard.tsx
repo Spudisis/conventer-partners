@@ -1,5 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import type { ConvertedImage, ImagePadding } from '../model/types';
+import type { ExportFormat } from '../../../pages/converter/ui/ConverterPage';
+import { svgToWebpBlob } from '../../../features/convert-image/lib/downloadHelpers';
 import { formatSize } from '../../../shared/lib/formatSize';
 import styles from './ImageCard.module.css';
 
@@ -23,24 +25,50 @@ function padMatch(a: ImagePadding, b: ImagePadding) {
 
 interface Props {
   image: ConvertedImage;
+  format: ExportFormat;
+  retinaScale: number;
   onDownload: (image: ConvertedImage) => void;
-  onDownloadWebp: (image: ConvertedImage) => void;
   onPaddingChange: (id: string, padding: ImagePadding) => void;
   onRename: (id: string, name: string) => void;
   onRemove: (id: string) => void;
 }
 
-export function ImageCard({ image, onDownload, onDownloadWebp, onPaddingChange, onRename, onRemove }: Props) {
+export function ImageCard({ image, format, retinaScale, onDownload, onPaddingChange, onRename, onRemove }: Props) {
   const originalSize = formatSize(image.originalFile.size);
-  const resultSize = image.svgSize ? formatSize(image.svgSize) : '—';
   const [localPad, setLocalPad] = useState(image.padding);
   const [editing, setEditing] = useState(false);
   const [nameValue, setNameValue] = useState(image.downloadName);
+  const [webpSize, setWebpSize] = useState<number | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (editing) inputRef.current?.focus();
   }, [editing]);
+
+  // Compute WebP size when format/retina/svgString changes
+  useEffect(() => {
+    if (format !== 'webp' || !image.svgString || image.status !== 'done') {
+      setWebpSize(null);
+      return;
+    }
+
+    let cancelled = false;
+    setWebpSize(null);
+
+    svgToWebpBlob(image.svgString, retinaScale).then((blob) => {
+      if (!cancelled) setWebpSize(blob.size);
+    }).catch(() => {
+      if (!cancelled) setWebpSize(null);
+    });
+
+    return () => { cancelled = true; };
+  }, [format, retinaScale, image.svgString, image.status]);
+
+  const resultSize = (() => {
+    if (image.status !== 'done') return '—';
+    if (format === 'svg') return image.svgSize ? formatSize(image.svgSize) : '—';
+    return webpSize !== null ? formatSize(webpSize) : '…';
+  })();
 
   const commitName = () => {
     const trimmed = nameValue.trim();
@@ -90,7 +118,7 @@ export function ImageCard({ image, onDownload, onDownloadWebp, onPaddingChange, 
         </div>
         <div className={styles.arrow}>→</div>
         <div className={styles.previewItem}>
-          <span className={styles.label}>SVG</span>
+          <span className={styles.label}>{format.toUpperCase()}</span>
           <div className={styles.imageWrap}>
             {image.status === 'done' && image.svgBlobUrl ? (
               <img src={image.svgBlobUrl} alt="converted" />
@@ -163,25 +191,16 @@ export function ImageCard({ image, onDownload, onDownloadWebp, onPaddingChange, 
             onClick={() => setEditing(true)}
             title="Click to rename"
           >
-            {image.downloadName}.svg
+            {image.downloadName}.{format}
           </span>
         )}
-        <div className={styles.downloadButtons}>
-          <button
-            className={styles.downloadBtn}
-            onClick={() => onDownload(image)}
-            disabled={image.status !== 'done'}
-          >
-            SVG
-          </button>
-          <button
-            className={styles.downloadBtnOutline}
-            onClick={() => onDownloadWebp(image)}
-            disabled={image.status !== 'done'}
-          >
-            WebP
-          </button>
-        </div>
+        <button
+          className={styles.downloadBtn}
+          onClick={() => onDownload(image)}
+          disabled={image.status !== 'done'}
+        >
+          {format.toUpperCase()}
+        </button>
       </div>
     </div>
   );

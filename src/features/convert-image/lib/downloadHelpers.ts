@@ -2,7 +2,7 @@ import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
 import type { ConvertedImage } from '../../../entities/image/model/types';
 
-function svgToWebpBlob(svgString: string, scale: number = 1): Promise<Blob> {
+export function svgToWebpBlob(svgString: string, scale: number = 1): Promise<Blob> {
   return new Promise((resolve, reject) => {
     const svgBlob = new Blob([svgString], { type: 'image/svg+xml' });
     const url = URL.createObjectURL(svgBlob);

@@ -10,12 +10,25 @@ import {
 } from '../../../features/convert-image/lib/downloadHelpers';
 import styles from './ConverterPage.module.css';
 
-const RETINA_OPTIONS = [1, 1.5, 2, 3];
+export type ExportFormat = 'svg' | 'webp';
+
+const RETINA_OPTIONS = [1, 1.5, 2, 3, 4];
 
 export function ConverterPage() {
   const { images, addFiles, updatePadding, rename, remove, clearAll } = useImageConverter();
   const doneCount = images.filter((i) => i.status === 'done').length;
+  const [format, setFormat] = useState<ExportFormat>('webp');
   const [retinaScale, setRetinaScale] = useState(1);
+
+  const handleDownload = (image: Parameters<typeof downloadSingle>[0]) => {
+    if (format === 'svg') downloadSingle(image);
+    else downloadSingleWebp(image, retinaScale);
+  };
+
+  const handleDownloadAll = () => {
+    if (format === 'svg') downloadAll(images);
+    else downloadAllWebp(images, retinaScale);
+  };
 
   return (
     <DropZone onFiles={addFiles}>
@@ -36,27 +49,38 @@ export function ConverterPage() {
             {doneCount} / {images.length} converted
           </span>
           <div className={styles.toolbarActions}>
-            <div className={styles.retinaGroup}>
-              <span className={styles.retinaLabel}>Retina</span>
-              {RETINA_OPTIONS.map((s) => (
-                <button
-                  key={s}
-                  className={`${styles.retinaBtn} ${retinaScale === s ? styles.retinaBtnActive : ''}`}
-                  onClick={() => setRetinaScale(s)}
-                >
-                  {s}x
-                </button>
-              ))}
+            <div className={styles.formatGroup}>
+              <button
+                className={`${styles.formatBtn} ${format === 'svg' ? styles.formatBtnActive : ''}`}
+                onClick={() => setFormat('svg')}
+              >
+                SVG
+              </button>
+              <button
+                className={`${styles.formatBtn} ${format === 'webp' ? styles.formatBtnActive : ''}`}
+                onClick={() => setFormat('webp')}
+              >
+                WebP
+              </button>
             </div>
+            {format === 'webp' && (
+              <div className={styles.retinaGroup}>
+                <span className={styles.retinaLabel}>Retina</span>
+                {RETINA_OPTIONS.map((s) => (
+                  <button
+                    key={s}
+                    className={`${styles.retinaBtn} ${retinaScale === s ? styles.retinaBtnActive : ''}`}
+                    onClick={() => setRetinaScale(s)}
+                  >
+                    {s}x
+                  </button>
+                ))}
+              </div>
+            )}
             {doneCount > 1 && (
-              <>
-                <button className={styles.actionBtn} onClick={() => downloadAll(images)}>
-                  All SVG (.zip)
-                </button>
-                <button className={styles.actionBtn} onClick={() => downloadAllWebp(images, retinaScale)}>
-                  All WebP (.zip)
-                </button>
-              </>
+              <button className={styles.actionBtn} onClick={handleDownloadAll}>
+                All {format.toUpperCase()} (.zip)
+              </button>
             )}
             <button className={styles.clearBtn} onClick={clearAll}>
               Clear All
@@ -81,8 +105,9 @@ export function ConverterPage() {
           <ImageCard
             key={img.id}
             image={img}
-            onDownload={downloadSingle}
-            onDownloadWebp={(image) => downloadSingleWebp(image, retinaScale)}
+            format={format}
+            retinaScale={retinaScale}
+            onDownload={handleDownload}
             onPaddingChange={updatePadding}
             onRename={rename}
             onRemove={remove}

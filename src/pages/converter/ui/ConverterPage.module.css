@@ -40,7 +40,40 @@
 
 .toolbarActions {
   display: flex;
+  align-items: center;
   gap: 8px;
+}
+
+.formatGroup {
+  display: flex;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  overflow: hidden;
+  margin-right: 4px;
+}
+
+.formatBtn {
+  padding: 5px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #565B63;
+  background: #f3f4f6;
+  border: none;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.formatBtn:not(:last-child) {
+  border-right: 1px solid #e5e7eb;
+}
+
+.formatBtn:hover:not(.formatBtnActive) {
+  background: #e8e9ec;
+}
+
+.formatBtnActive {
+  background: #565B63;
+  color: #fff;
 }
 
 .actionBtn {
