@@ -3,7 +3,9 @@ import { ImageCard } from '../../../entities/image/ui/ImageCard';
 import { useImageConverter } from '../../../features/convert-image/lib/useImageConverter';
 import {
   downloadSingle,
+  downloadSingleWebp,
   downloadAll,
+  downloadAllWebp,
 } from '../../../features/convert-image/lib/downloadHelpers';
 import styles from './ConverterPage.module.css';
 
@@ -31,9 +33,14 @@ export function ConverterPage() {
           </span>
           <div className={styles.toolbarActions}>
             {doneCount > 1 && (
-              <button className={styles.actionBtn} onClick={() => downloadAll(images)}>
-                Download All (.zip)
-              </button>
+              <>
+                <button className={styles.actionBtn} onClick={() => downloadAll(images)}>
+                  All SVG (.zip)
+                </button>
+                <button className={styles.actionBtn} onClick={() => downloadAllWebp(images)}>
+                  All WebP (.zip)
+                </button>
+              </>
             )}
             <button className={styles.clearBtn} onClick={clearAll}>
               Clear All
@@ -55,7 +62,7 @@ export function ConverterPage() {
 
       <div className={styles.grid}>
         {images.map((img) => (
-          <ImageCard key={img.id} image={img} onDownload={downloadSingle} onPaddingChange={updatePadding} onRename={rename} onRemove={remove} />
+          <ImageCard key={img.id} image={img} onDownload={downloadSingle} onDownloadWebp={downloadSingleWebp} onPaddingChange={updatePadding} onRename={rename} onRemove={remove} />
         ))}
       </div>
     </DropZone>

@@ -248,6 +248,11 @@
   flex: 1;
 }
 
+.downloadButtons {
+  display: flex;
+  gap: 6px;
+}
+
 .downloadBtn {
   padding: 6px 14px;
   font-size: 13px;
@@ -265,6 +270,27 @@
 }
 
 .downloadBtn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.downloadBtnOutline {
+  padding: 6px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  color: #565B63;
+  background: transparent;
+  border: 1px solid #565B63;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.downloadBtnOutline:hover:not(:disabled) {
+  background: #f3f4f6;
+}
+
+.downloadBtnOutline:disabled {
   opacity: 0.4;
   cursor: default;
 }

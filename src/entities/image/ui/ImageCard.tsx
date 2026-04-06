@@ -24,12 +24,13 @@ function padMatch(a: ImagePadding, b: ImagePadding) {
 interface Props {
   image: ConvertedImage;
   onDownload: (image: ConvertedImage) => void;
+  onDownloadWebp: (image: ConvertedImage) => void;
   onPaddingChange: (id: string, padding: ImagePadding) => void;
   onRename: (id: string, name: string) => void;
   onRemove: (id: string) => void;
 }
 
-export function ImageCard({ image, onDownload, onPaddingChange, onRename, onRemove }: Props) {
+export function ImageCard({ image, onDownload, onDownloadWebp, onPaddingChange, onRename, onRemove }: Props) {
   const originalSize = formatSize(image.originalFile.size);
   const resultSize = image.svgSize ? formatSize(image.svgSize) : '—';
   const [localPad, setLocalPad] = useState(image.padding);
@@ -165,13 +166,22 @@ export function ImageCard({ image, onDownload, onPaddingChange, onRename, onRemo
             {image.downloadName}.svg
           </span>
         )}
-        <button
-          className={styles.downloadBtn}
-          onClick={() => onDownload(image)}
-          disabled={image.status !== 'done'}
-        >
-          Download SVG
-        </button>
+        <div className={styles.downloadButtons}>
+          <button
+            className={styles.downloadBtn}
+            onClick={() => onDownload(image)}
+            disabled={image.status !== 'done'}
+          >
+            SVG
+          </button>
+          <button
+            className={styles.downloadBtnOutline}
+            onClick={() => onDownloadWebp(image)}
+            disabled={image.status !== 'done'}
+          >
+            WebP
+          </button>
+        </div>
       </div>
     </div>
   );
