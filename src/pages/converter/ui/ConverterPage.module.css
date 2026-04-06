@@ -59,6 +59,51 @@
   background: #44484f;
 }
 
+.retinaGroup {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-right: 8px;
+}
+
+.retinaLabel {
+  font-size: 12px;
+  font-weight: 600;
+  color: #8b8f96;
+  margin-right: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.retinaBtn {
+  padding: 5px 10px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #565B63;
+  background: #f3f4f6;
+  border: 1px solid #e5e7eb;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: all 0.15s;
+  font-variant-numeric: tabular-nums;
+}
+
+.retinaBtn:hover {
+  background: #e8e9ec;
+  border-color: #d1d5db;
+}
+
+.retinaBtnActive {
+  background: #565B63;
+  color: #fff;
+  border-color: #565B63;
+}
+
+.retinaBtnActive:hover {
+  background: #44484f;
+  border-color: #44484f;
+}
+
 .clearBtn {
   padding: 7px 16px;
   font-size: 13px;

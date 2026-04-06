@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { DropZone } from '../../../features/convert-image/ui/DropZone';
 import { ImageCard } from '../../../entities/image/ui/ImageCard';
 import { useImageConverter } from '../../../features/convert-image/lib/useImageConverter';
@@ -9,9 +10,12 @@ import {
 } from '../../../features/convert-image/lib/downloadHelpers';
 import styles from './ConverterPage.module.css';
 
+const RETINA_OPTIONS = [1, 1.5, 2, 3];
+
 export function ConverterPage() {
   const { images, addFiles, updatePadding, rename, remove, clearAll } = useImageConverter();
   const doneCount = images.filter((i) => i.status === 'done').length;
+  const [retinaScale, setRetinaScale] = useState(1);
 
   return (
     <DropZone onFiles={addFiles}>
@@ -32,12 +36,24 @@ export function ConverterPage() {
             {doneCount} / {images.length} converted
           </span>
           <div className={styles.toolbarActions}>
+            <div className={styles.retinaGroup}>
+              <span className={styles.retinaLabel}>Retina</span>
+              {RETINA_OPTIONS.map((s) => (
+                <button
+                  key={s}
+                  className={`${styles.retinaBtn} ${retinaScale === s ? styles.retinaBtnActive : ''}`}
+                  onClick={() => setRetinaScale(s)}
+                >
+                  {s}x
+                </button>
+              ))}
+            </div>
             {doneCount > 1 && (
               <>
                 <button className={styles.actionBtn} onClick={() => downloadAll(images)}>
                   All SVG (.zip)
                 </button>
-                <button className={styles.actionBtn} onClick={() => downloadAllWebp(images)}>
+                <button className={styles.actionBtn} onClick={() => downloadAllWebp(images, retinaScale)}>
                   All WebP (.zip)
                 </button>
               </>
@@ -62,7 +78,15 @@ export function ConverterPage() {
 
       <div className={styles.grid}>
         {images.map((img) => (
-          <ImageCard key={img.id} image={img} onDownload={downloadSingle} onDownloadWebp={downloadSingleWebp} onPaddingChange={updatePadding} onRename={rename} onRemove={remove} />
+          <ImageCard
+            key={img.id}
+            image={img}
+            onDownload={downloadSingle}
+            onDownloadWebp={(image) => downloadSingleWebp(image, retinaScale)}
+            onPaddingChange={updatePadding}
+            onRename={rename}
+            onRemove={remove}
+          />
         ))}
       </div>
     </DropZone>

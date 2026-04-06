@@ -2,16 +2,17 @@ import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
 import type { ConvertedImage } from '../../../entities/image/model/types';
 
-function svgToWebpBlob(svgString: string): Promise<Blob> {
+function svgToWebpBlob(svgString: string, scale: number = 1): Promise<Blob> {
   return new Promise((resolve, reject) => {
     const svgBlob = new Blob([svgString], { type: 'image/svg+xml' });
     const url = URL.createObjectURL(svgBlob);
     const img = new Image();
     img.onload = () => {
       const canvas = document.createElement('canvas');
-      canvas.width = img.naturalWidth;
-      canvas.height = img.naturalHeight;
+      canvas.width = Math.round(img.naturalWidth * scale);
+      canvas.height = Math.round(img.naturalHeight * scale);
       const ctx = canvas.getContext('2d')!;
+      ctx.scale(scale, scale);
       ctx.drawImage(img, 0, 0);
       URL.revokeObjectURL(url);
       canvas.toBlob(
@@ -37,9 +38,9 @@ export function downloadSingle(image: ConvertedImage) {
   saveAs(blob, image.downloadName + '.svg');
 }
 
-export async function downloadSingleWebp(image: ConvertedImage) {
+export async function downloadSingleWebp(image: ConvertedImage, scale: number = 1) {
   if (!image.svgString) return;
-  const blob = await svgToWebpBlob(image.svgString);
+  const blob = await svgToWebpBlob(image.svgString, scale);
   saveAs(blob, image.downloadName + '.webp');
 }
 
@@ -56,13 +57,13 @@ export async function downloadAll(images: ConvertedImage[]) {
   saveAs(content, 'converted-svgs.zip');
 }
 
-export async function downloadAllWebp(images: ConvertedImage[]) {
+export async function downloadAllWebp(images: ConvertedImage[], scale: number = 1) {
   const done = images.filter((i) => i.status === 'done' && i.svgString);
   if (done.length === 0) return;
 
   const zip = new JSZip();
   for (const img of done) {
-    const blob = await svgToWebpBlob(img.svgString!);
+    const blob = await svgToWebpBlob(img.svgString!, scale);
     zip.file(img.downloadName + '.webp', blob);
   }
 
