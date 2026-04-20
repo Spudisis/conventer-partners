@@ -5,6 +5,8 @@ export interface ImagePadding {
   left: number;
 }
 
+export type FillMethod = 'default' | 'cutout' | 'foreground' | 'two-tone';
+
 export interface ConvertedImage {
   id: string;
   originalFile: File;
@@ -13,6 +15,8 @@ export interface ConvertedImage {
   svgBlobUrl: string | null;
   svgSize: number;
   padding: ImagePadding;
+  fillMethod: FillMethod;
+  isVectorSvg: boolean;
   downloadName: string;
   status: 'pending' | 'converting' | 'done' | 'error';
   error?: string;

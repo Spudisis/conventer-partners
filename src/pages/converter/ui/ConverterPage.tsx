@@ -15,7 +15,7 @@ export type ExportFormat = 'svg' | 'webp';
 const RETINA_OPTIONS = [1, 1.5, 2, 3, 4];
 
 export function ConverterPage() {
-  const { images, addFiles, updatePadding, rename, remove, clearAll } = useImageConverter();
+  const { images, addFiles, updatePadding, updateFillMethod, rename, remove, clearAll } = useImageConverter();
   const doneCount = images.filter((i) => i.status === 'done').length;
   const [format, setFormat] = useState<ExportFormat>('webp');
   const [retinaScale, setRetinaScale] = useState(2);
@@ -109,6 +109,7 @@ export function ConverterPage() {
             retinaScale={retinaScale}
             onDownload={handleDownload}
             onPaddingChange={updatePadding}
+            onFillMethodChange={updateFillMethod}
             onRename={rename}
             onRemove={remove}
           />

@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import type { ConvertedImage, ImagePadding } from '../model/types';
+import type { ConvertedImage, FillMethod, ImagePadding } from '../model/types';
 import type { ExportFormat } from '../../../pages/converter/ui/ConverterPage';
 import { svgToWebpBlob } from '../../../features/convert-image/lib/downloadHelpers';
 import { formatSize } from '../../../shared/lib/formatSize';
@@ -19,6 +19,13 @@ const PRESETS: PaddingPreset[] = [
   { label: 'T:5 R:15 B:5 L:15',  padding: { top: 5,  right: 15, bottom: 5,  left: 15 } },
 ];
 
+const FILL_METHODS: { value: FillMethod; label: string }[] = [
+  { value: 'default',    label: 'Default' },
+  { value: 'cutout',     label: 'Cutout' },
+  { value: 'foreground', label: 'Foreground' },
+  { value: 'two-tone',   label: 'Two-tone' },
+];
+
 function padMatch(a: ImagePadding, b: ImagePadding) {
   return a.top === b.top && a.right === b.right && a.bottom === b.bottom && a.left === b.left;
 }
@@ -29,11 +36,12 @@ interface Props {
   retinaScale: number;
   onDownload: (image: ConvertedImage) => void;
   onPaddingChange: (id: string, padding: ImagePadding) => void;
+  onFillMethodChange: (id: string, method: FillMethod) => void;
   onRename: (id: string, name: string) => void;
   onRemove: (id: string) => void;
 }
 
-export function ImageCard({ image, format, retinaScale, onDownload, onPaddingChange, onRename, onRemove }: Props) {
+export function ImageCard({ image, format, retinaScale, onDownload, onPaddingChange, onFillMethodChange, onRename, onRemove }: Props) {
   const originalSize = formatSize(image.originalFile.size);
   const [localPad, setLocalPad] = useState(image.padding);
   const [editing, setEditing] = useState(false);
@@ -133,6 +141,30 @@ export function ImageCard({ image, format, retinaScale, onDownload, onPaddingCha
       </div>
 
       <div className={styles.paddingControls}>
+        <span className={styles.paddingLabel}>Fill</span>
+        <div className={styles.presets}>
+          {FILL_METHODS.map((fm) => {
+            const isActive = image.fillMethod === fm.value;
+            const isCompositeMode = fm.value !== 'default';
+            const disabled =
+              image.status === 'converting' ||
+              isActive ||
+              (isCompositeMode && !image.isVectorSvg);
+            const title = isCompositeMode && !image.isVectorSvg ? 'only for vector SVG' : undefined;
+            return (
+              <button
+                key={fm.value}
+                className={`${styles.presetBadge} ${isActive ? styles.presetActive : ''}`}
+                onClick={() => onFillMethodChange(image.id, fm.value)}
+                disabled={disabled}
+                title={title}
+              >
+                {fm.label}
+              </button>
+            );
+          })}
+        </div>
+
         <span className={styles.paddingLabel}>Presets</span>
         <div className={styles.presets}>
           {PRESETS.map((preset) => (

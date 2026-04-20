@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react';
-import type { ConvertedImage, ImagePadding } from '../../../entities/image/model/types';
-import { convertToSvg, getImageDimensions, getDefaultPadding } from '../../../shared/lib/imageToSvg';
+import type { ConvertedImage, FillMethod, ImagePadding } from '../../../entities/image/model/types';
+import { convertToSvg, getImageDimensions, getDefaultPadding, isSvgVector } from '../../../shared/lib/imageToSvg';
 
 let counter = 0;
 
@@ -8,13 +8,14 @@ function runConversion(
   id: string,
   file: File,
   padding: ImagePadding,
+  fillMethod: FillMethod,
   setImages: React.Dispatch<React.SetStateAction<ConvertedImage[]>>,
 ) {
   setImages((prev) =>
     prev.map((i) => (i.id === id ? { ...i, status: 'converting' as const } : i))
   );
 
-  convertToSvg(file, padding)
+  convertToSvg(file, padding, fillMethod)
     .then((svgString) => {
       const blob = new Blob([svgString], { type: 'image/svg+xml' });
       const blobUrl = URL.createObjectURL(blob);
@@ -51,8 +52,12 @@ export function useImageConverter() {
 
     accepted.forEach(async (file) => {
       const id = `${++counter}-${file.name}`;
-      const dims = await getImageDimensions(file);
+      const [dims, isVectorSvg] = await Promise.all([
+        getImageDimensions(file),
+        isSvgVector(file),
+      ]);
       const padding = getDefaultPadding(dims.w, dims.h);
+      const fillMethod: FillMethod = 'default';
 
       const baseName = file.name.replace(/\.[^.]+$/, '');
 
@@ -64,12 +69,14 @@ export function useImageConverter() {
         svgBlobUrl: null,
         svgSize: 0,
         padding,
+        fillMethod,
+        isVectorSvg,
         downloadName: baseName,
         status: 'pending',
       };
 
       setImages((prev) => [...prev, newImage]);
-      runConversion(id, file, padding, setImages);
+      runConversion(id, file, padding, fillMethod, setImages);
     });
   }, []);
 
@@ -78,7 +85,6 @@ export function useImageConverter() {
       const img = prev.find((i) => i.id === id);
       if (!img) return prev;
 
-      // Revoke old blob
       if (img.svgBlobUrl) URL.revokeObjectURL(img.svgBlobUrl);
 
       const updated = prev.map((i) =>
@@ -87,8 +93,27 @@ export function useImageConverter() {
           : i
       );
 
-      // Trigger reconversion
-      runConversion(id, img.originalFile, padding, setImages);
+      runConversion(id, img.originalFile, padding, img.fillMethod, setImages);
+
+      return updated;
+    });
+  }, []);
+
+  const updateFillMethod = useCallback((id: string, fillMethod: FillMethod) => {
+    setImages((prev) => {
+      const img = prev.find((i) => i.id === id);
+      if (!img) return prev;
+      if (img.fillMethod === fillMethod) return prev;
+
+      if (img.svgBlobUrl) URL.revokeObjectURL(img.svgBlobUrl);
+
+      const updated = prev.map((i) =>
+        i.id === id
+          ? { ...i, fillMethod, svgBlobUrl: null, svgString: null, svgSize: 0, status: 'pending' as const }
+          : i
+      );
+
+      runConversion(id, img.originalFile, img.padding, fillMethod, setImages);
 
       return updated;
     });
@@ -121,5 +146,5 @@ export function useImageConverter() {
     });
   }, []);
 
-  return { images, addFiles, updatePadding, rename, remove, clearAll };
+  return { images, addFiles, updatePadding, updateFillMethod, rename, remove, clearAll };
 }

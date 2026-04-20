@@ -1,9 +1,34 @@
 import { optimize } from 'svgo';
-import type { ImagePadding } from '../../entities/image/model/types';
+import type { ImagePadding, FillMethod } from '../../entities/image/model/types';
 
 const TARGET_WIDTH = 178;
 const TARGET_HEIGHT = 82;
 const TARGET_COLOR = '#565B63';
+const TWO_TONE_OPACITY = 0.15;
+
+const SKIP_TAGS = new Set([
+  'defs',
+  'clipPath',
+  'mask',
+  'pattern',
+  'linearGradient',
+  'radialGradient',
+  'filter',
+]);
+
+const SHAPE_TAGS = new Set([
+  'rect',
+  'path',
+  'polygon',
+  'polyline',
+  'circle',
+  'ellipse',
+  'line',
+  'use',
+  'image',
+]);
+
+let maskIdCounter = 0;
 
 export function getDefaultPadding(_w: number, _h: number): ImagePadding {
   return { top: 0, right: 0, bottom: 0, left: 0 };
@@ -37,11 +62,81 @@ export function getImageDimensions(file: File): Promise<{ w: number; h: number }
   });
 }
 
-function svgStringToMonochrome(svgText: string, pad: ImagePadding): string {
-  const parser = new DOMParser();
-  const doc = parser.parseFromString(svgText, 'image/svg+xml');
-  const svg = doc.documentElement;
+function isInsideSkipped(el: Element, root: Element): boolean {
+  let node: Element | null = el.parentElement;
+  while (node && node !== root) {
+    if (SKIP_TAGS.has(node.tagName.toLowerCase())) return true;
+    node = node.parentElement;
+  }
+  return false;
+}
 
+function isVisibleCandidate(el: Element, root: Element): boolean {
+  if (SKIP_TAGS.has(el.tagName.toLowerCase())) return false;
+  if (isInsideSkipped(el, root)) return false;
+  return true;
+}
+
+function findBackgroundEl(svg: Element): Element | null {
+  const all = svg.querySelectorAll('*');
+  for (const el of Array.from(all)) {
+    if (!isVisibleCandidate(el, svg)) continue;
+    if (SHAPE_TAGS.has(el.tagName.toLowerCase())) return el;
+  }
+  return null;
+}
+
+function recolorElement(el: Element, fillColor: string | null, strokeColor: string | null) {
+  const fill = el.getAttribute('fill');
+  if (fillColor && fill && fill !== 'none' && fill !== 'transparent') {
+    el.setAttribute('fill', fillColor);
+  }
+  const stroke = el.getAttribute('stroke');
+  if (strokeColor && stroke && stroke !== 'none' && stroke !== 'transparent') {
+    el.setAttribute('stroke', strokeColor);
+  }
+  const style = el.getAttribute('style');
+  if (style) {
+    let newStyle = style;
+    if (fillColor) {
+      newStyle = newStyle.replace(
+        /fill\s*:\s*(?!none|transparent)[^;]+/gi,
+        `fill: ${fillColor}`,
+      );
+    }
+    if (strokeColor) {
+      newStyle = newStyle.replace(
+        /stroke\s*:\s*(?!none|transparent)[^;]+/gi,
+        `stroke: ${strokeColor}`,
+      );
+    }
+    el.setAttribute('style', newStyle);
+  }
+}
+
+function recolorAll(svg: Element, fillColor: string | null, strokeColor: string | null) {
+  svg.querySelectorAll('*').forEach((el) => {
+    if (!isVisibleCandidate(el, svg)) return;
+    recolorElement(el, fillColor, strokeColor);
+  });
+}
+
+function forcePaint(el: Element, fillColor: string, strokeColor: string | null) {
+  el.setAttribute('fill', fillColor);
+  if (strokeColor && el.getAttribute('stroke') && el.getAttribute('stroke') !== 'none') {
+    el.setAttribute('stroke', strokeColor);
+  }
+  const style = el.getAttribute('style');
+  if (style) {
+    let newStyle = style.replace(/fill\s*:\s*[^;]+/gi, `fill: ${fillColor}`);
+    if (strokeColor) {
+      newStyle = newStyle.replace(/stroke\s*:\s*(?!none)[^;]+/gi, `stroke: ${strokeColor}`);
+    }
+    el.setAttribute('style', newStyle);
+  }
+}
+
+function fitSvg(svg: Element, pad: ImagePadding): { origW: number; origH: number } {
   const origW = parseFloat(svg.getAttribute('width') || '0') ||
     parseFloat((svg.getAttribute('viewBox') || '').split(/\s+/)[2] || '0') || 100;
   const origH = parseFloat(svg.getAttribute('height') || '0') ||
@@ -50,7 +145,6 @@ function svgStringToMonochrome(svgText: string, pad: ImagePadding): string {
   const innerW = TARGET_WIDTH - pad.left - pad.right;
   const innerH = TARGET_HEIGHT - pad.top - pad.bottom;
 
-  // Fit content preserving aspect ratio
   const scale = Math.min(innerW / origW, innerH / origH);
   const fitW = origW * scale;
   const fitH = origH * scale;
@@ -66,49 +160,119 @@ function svgStringToMonochrome(svgText: string, pad: ImagePadding): string {
   svg.setAttribute('x', `${offsetX}`);
   svg.setAttribute('y', `${offsetY}`);
 
-  // Only recolor visible elements — skip defs, clipPath, mask internals
-  const skipTags = new Set(['defs', 'clipPath', 'mask', 'pattern', 'linearGradient', 'radialGradient', 'filter']);
+  return { origW, origH };
+}
 
-  function isInsideSkipped(el: Element): boolean {
-    let node: Element | null = el.parentElement;
-    while (node && node !== svg) {
-      if (skipTags.has(node.tagName.toLowerCase())) return true;
-      node = node.parentElement;
-    }
-    return false;
+function wrapInOuter(innerSvgString: string, extraDefs = '', gAttrs = ''): string {
+  const defs = extraDefs ? `<defs>${extraDefs}</defs>` : '';
+  const body = gAttrs ? `<g ${gAttrs}>${innerSvgString}</g>` : innerSvgString;
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${TARGET_WIDTH}px" height="${TARGET_HEIGHT}px" viewBox="0 0 ${TARGET_WIDTH} ${TARGET_HEIGHT}">${defs}${body}</svg>`;
+}
+
+function applyDefault(svg: Element): string {
+  recolorAll(svg, TARGET_COLOR, TARGET_COLOR);
+
+  const hasVisibleFill = Array.from(svg.querySelectorAll('*')).some(
+    (el) => isVisibleCandidate(el, svg) && el.getAttribute('fill'),
+  );
+  if (!hasVisibleFill) {
+    svg.setAttribute('fill', TARGET_COLOR);
   }
+  return new XMLSerializer().serializeToString(svg);
+}
 
-  const allElements = svg.querySelectorAll('*');
-  allElements.forEach((el) => {
-    if (skipTags.has(el.tagName.toLowerCase()) || isInsideSkipped(el)) return;
+function applyForeground(svg: Element): string {
+  const bg = findBackgroundEl(svg);
+  if (bg && bg.parentElement) {
+    bg.parentElement.removeChild(bg);
+  }
+  return applyDefault(svg);
+}
 
-    const fill = el.getAttribute('fill');
-    if (fill && fill !== 'none' && fill !== 'transparent') {
-      el.setAttribute('fill', TARGET_COLOR);
-    }
-    const stroke = el.getAttribute('stroke');
-    if (stroke && stroke !== 'none' && stroke !== 'transparent') {
-      el.setAttribute('stroke', TARGET_COLOR);
-    }
-    const style = el.getAttribute('style');
-    if (style) {
-      const newStyle = style
-        .replace(/fill\s*:\s*(?!none|transparent)[^;]+/gi, `fill: ${TARGET_COLOR}`)
-        .replace(/stroke\s*:\s*(?!none|transparent)[^;]+/gi, `stroke: ${TARGET_COLOR}`);
-      el.setAttribute('style', newStyle);
-    }
-  });
+function applyTwoTone(svg: Element): string {
+  const bg = findBackgroundEl(svg);
+  recolorAll(svg, TARGET_COLOR, TARGET_COLOR);
 
-  // Add fill to visible content only if no explicit fills found
-  const hasVisibleFill = Array.from(allElements).some(
-    (el) => !skipTags.has(el.tagName.toLowerCase()) && !isInsideSkipped(el) && el.getAttribute('fill')
+  const hasVisibleFill = Array.from(svg.querySelectorAll('*')).some(
+    (el) => isVisibleCandidate(el, svg) && el.getAttribute('fill'),
   );
   if (!hasVisibleFill) {
     svg.setAttribute('fill', TARGET_COLOR);
   }
 
-  const innerSvgString = new XMLSerializer().serializeToString(svg);
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${TARGET_WIDTH}px" height="${TARGET_HEIGHT}px" viewBox="0 0 ${TARGET_WIDTH} ${TARGET_HEIGHT}">${innerSvgString}</svg>`;
+  if (bg) {
+    forcePaint(bg, TARGET_COLOR, bg.getAttribute('stroke') ? TARGET_COLOR : null);
+    bg.setAttribute('fill-opacity', String(TWO_TONE_OPACITY));
+    if (bg.getAttribute('stroke') && bg.getAttribute('stroke') !== 'none') {
+      bg.setAttribute('stroke-opacity', String(TWO_TONE_OPACITY));
+    }
+  }
+  return new XMLSerializer().serializeToString(svg);
+}
+
+function applyCutout(svg: Element): { inner: string; defs: string; gAttrs: string } | null {
+  const bg = findBackgroundEl(svg);
+  if (!bg) return null;
+
+  const BG_MARKER = 'data-fill-bg-role';
+  bg.setAttribute(BG_MARKER, '1');
+
+  const maskSvg = svg.cloneNode(true) as Element;
+
+  maskSvg.querySelectorAll('*').forEach((el) => {
+    if (!isVisibleCandidate(el, maskSvg)) return;
+    forcePaint(el, 'black', el.getAttribute('stroke') ? 'black' : null);
+  });
+  const bgInMask = maskSvg.querySelector(`[${BG_MARKER}]`);
+  if (bgInMask) {
+    forcePaint(bgInMask, 'white', bgInMask.getAttribute('stroke') ? 'white' : null);
+    bgInMask.removeAttribute(BG_MARKER);
+  }
+
+  bg.removeAttribute(BG_MARKER);
+
+  recolorAll(svg, TARGET_COLOR, TARGET_COLOR);
+  const hasVisibleFill = Array.from(svg.querySelectorAll('*')).some(
+    (el) => isVisibleCandidate(el, svg) && el.getAttribute('fill'),
+  );
+  if (!hasVisibleFill) {
+    svg.setAttribute('fill', TARGET_COLOR);
+  }
+
+  const maskId = `cutout-${++maskIdCounter}`;
+  const serializer = new XMLSerializer();
+  const maskContent = serializer.serializeToString(maskSvg);
+  const paintedInner = serializer.serializeToString(svg);
+
+  const maskEl = `<mask id="${maskId}" maskUnits="userSpaceOnUse" x="0" y="0" width="${TARGET_WIDTH}" height="${TARGET_HEIGHT}"><rect x="0" y="0" width="${TARGET_WIDTH}" height="${TARGET_HEIGHT}" fill="black"/>${maskContent}</mask>`;
+
+  return { inner: paintedInner, defs: maskEl, gAttrs: `mask="url(#${maskId})"` };
+}
+
+function svgStringToMonochrome(svgText: string, pad: ImagePadding, fillMethod: FillMethod): string {
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(svgText, 'image/svg+xml');
+  const svg = doc.documentElement;
+
+  fitSvg(svg, pad);
+
+  if (fillMethod === 'cutout') {
+    const result = applyCutout(svg);
+    if (result) {
+      return wrapInOuter(result.inner, result.defs, result.gAttrs);
+    }
+    // Fallback: no background detected, behave like default
+  }
+
+  let inner: string;
+  if (fillMethod === 'foreground') {
+    inner = applyForeground(svg);
+  } else if (fillMethod === 'two-tone') {
+    inner = applyTwoTone(svg);
+  } else {
+    inner = applyDefault(svg);
+  }
+  return wrapInOuter(inner);
 }
 
 function rasterToSvg(
@@ -127,14 +291,12 @@ function rasterToSvg(
       const srcW = intrinsicSize?.w || img.naturalWidth;
       const srcH = intrinsicSize?.h || img.naturalHeight;
 
-      // Fit preserving aspect ratio (in target SVG units)
       const fitScale = Math.min(innerW / srcW, innerH / srcH);
       const fitW = srcW * fitScale;
       const fitH = srcH * fitScale;
       const offsetX = pad.left + (innerW - fitW) / 2;
       const offsetY = pad.top + (innerH - fitH) / 2;
 
-      // Render at higher resolution; each output rect spans 1/superSample SVG units
       const canvasW = Math.max(1, Math.round(fitW * superSample));
       const canvasH = Math.max(1, Math.round(fitH * superSample));
       const unit = 1 / superSample;
@@ -222,7 +384,6 @@ function minifySvg(svgString: string): string {
       'sortAttrs',
     ],
   });
-  // Re-add xmlns since we stripped it for minification passes but need it in final output
   return result.data.replace('<svg', '<svg xmlns="http://www.w3.org/2000/svg"');
 }
 
@@ -250,7 +411,18 @@ function getSvgIntrinsicSize(svgText: string): { w: number; h: number } {
   return { w, h };
 }
 
-export async function convertToSvg(file: File, padding: ImagePadding): Promise<string> {
+export async function isSvgVector(file: File): Promise<boolean> {
+  const isSvg = file.type === 'image/svg+xml' || file.name.endsWith('.svg');
+  if (!isSvg) return false;
+  const text = await file.text();
+  return !svgHasEmbeddedRaster(text);
+}
+
+export async function convertToSvg(
+  file: File,
+  padding: ImagePadding,
+  fillMethod: FillMethod = 'default',
+): Promise<string> {
   let raw: string;
 
   if (file.type === 'image/svg+xml' || file.name.endsWith('.svg')) {
@@ -264,7 +436,7 @@ export async function convertToSvg(file: File, padding: ImagePadding): Promise<s
         URL.revokeObjectURL(url);
       }
     } else {
-      raw = svgStringToMonochrome(text, padding);
+      raw = svgStringToMonochrome(text, padding, fillMethod);
     }
   } else {
     const url = URL.createObjectURL(file);
