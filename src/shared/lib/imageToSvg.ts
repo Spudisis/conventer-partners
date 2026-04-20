@@ -111,7 +111,12 @@ function svgStringToMonochrome(svgText: string, pad: ImagePadding): string {
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${TARGET_WIDTH}px" height="${TARGET_HEIGHT}px" viewBox="0 0 ${TARGET_WIDTH} ${TARGET_HEIGHT}">${innerSvgString}</svg>`;
 }
 
-function rasterToSvg(imageUrl: string, pad: ImagePadding): Promise<string> {
+function rasterToSvg(
+  imageUrl: string,
+  pad: ImagePadding,
+  intrinsicSize?: { w: number; h: number },
+  superSample = 1,
+): Promise<string> {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.crossOrigin = 'anonymous';
@@ -119,36 +124,52 @@ function rasterToSvg(imageUrl: string, pad: ImagePadding): Promise<string> {
       const innerW = TARGET_WIDTH - pad.left - pad.right;
       const innerH = TARGET_HEIGHT - pad.top - pad.bottom;
 
-      // Fit preserving aspect ratio
-      const scale = Math.min(innerW / img.naturalWidth, innerH / img.naturalHeight);
-      const drawW = Math.round(img.naturalWidth * scale);
-      const drawH = Math.round(img.naturalHeight * scale);
-      const offsetX = pad.left + Math.round((innerW - drawW) / 2);
-      const offsetY = pad.top + Math.round((innerH - drawH) / 2);
+      const srcW = intrinsicSize?.w || img.naturalWidth;
+      const srcH = intrinsicSize?.h || img.naturalHeight;
+
+      // Fit preserving aspect ratio (in target SVG units)
+      const fitScale = Math.min(innerW / srcW, innerH / srcH);
+      const fitW = srcW * fitScale;
+      const fitH = srcH * fitScale;
+      const offsetX = pad.left + (innerW - fitW) / 2;
+      const offsetY = pad.top + (innerH - fitH) / 2;
+
+      // Render at higher resolution; each output rect spans 1/superSample SVG units
+      const canvasW = Math.max(1, Math.round(fitW * superSample));
+      const canvasH = Math.max(1, Math.round(fitH * superSample));
+      const unit = 1 / superSample;
 
       const canvas = document.createElement('canvas');
-      canvas.width = drawW;
-      canvas.height = drawH;
+      canvas.width = canvasW;
+      canvas.height = canvasH;
       const ctx = canvas.getContext('2d')!;
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
 
-      ctx.drawImage(img, 0, 0, drawW, drawH);
+      ctx.drawImage(img, 0, 0, canvasW, canvasH);
 
-      const imageData = ctx.getImageData(0, 0, drawW, drawH);
+      const imageData = ctx.getImageData(0, 0, canvasW, canvasH);
       const { data, width, height } = imageData;
 
       const rects: string[] = [];
       const visited = new Uint8Array(width * height);
+      const ALPHA_THRESHOLD = 128;
+
+      const fmt = (n: number) => {
+        const r = Math.round(n * 1000) / 1000;
+        return Number.isInteger(r) ? `${r}` : `${r}`;
+      };
 
       for (let y = 0; y < height; y++) {
         for (let x = 0; x < width; x++) {
           const idx = y * width + x;
           const alpha = data[idx * 4 + 3];
-          if (alpha < 30 || visited[idx]) continue;
+          if (alpha < ALPHA_THRESHOLD || visited[idx]) continue;
 
           let runEnd = x;
           while (
             runEnd < width &&
-            data[(y * width + runEnd) * 4 + 3] >= 30 &&
+            data[(y * width + runEnd) * 4 + 3] >= ALPHA_THRESHOLD &&
             !visited[y * width + runEnd]
           ) {
             runEnd++;
@@ -158,7 +179,7 @@ function rasterToSvg(imageUrl: string, pad: ImagePadding): Promise<string> {
           outer: while (rowEnd < height) {
             for (let rx = x; rx < runEnd; rx++) {
               const rIdx = rowEnd * width + rx;
-              if (data[rIdx * 4 + 3] < 30 || visited[rIdx]) break outer;
+              if (data[rIdx * 4 + 3] < ALPHA_THRESHOLD || visited[rIdx]) break outer;
             }
             rowEnd++;
           }
@@ -169,9 +190,11 @@ function rasterToSvg(imageUrl: string, pad: ImagePadding): Promise<string> {
             }
           }
 
-          rects.push(
-            `<rect x="${x + offsetX}" y="${y + offsetY}" width="${runEnd - x}" height="${rowEnd - y}"/>`
-          );
+          const rx = offsetX + x * unit;
+          const ry = offsetY + y * unit;
+          const rw = (runEnd - x) * unit;
+          const rh = (rowEnd - y) * unit;
+          rects.push(`<rect x="${fmt(rx)}" y="${fmt(ry)}" width="${fmt(rw)}" height="${fmt(rh)}"/>`);
         }
       }
 
@@ -203,12 +226,46 @@ function minifySvg(svgString: string): string {
   return result.data.replace('<svg', '<svg xmlns="http://www.w3.org/2000/svg"');
 }
 
+function svgHasEmbeddedRaster(svgText: string): boolean {
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(svgText, 'image/svg+xml');
+  const images = doc.documentElement.getElementsByTagName('image');
+  for (let i = 0; i < images.length; i++) {
+    const href =
+      images[i].getAttribute('href') ||
+      images[i].getAttributeNS('http://www.w3.org/1999/xlink', 'href') ||
+      '';
+    if (/^data:image\/[^;]+;base64,/i.test(href)) return true;
+  }
+  return false;
+}
+
+function getSvgIntrinsicSize(svgText: string): { w: number; h: number } {
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(svgText, 'image/svg+xml');
+  const svg = doc.documentElement;
+  const vb = (svg.getAttribute('viewBox') || '').split(/\s+/);
+  const w = parseFloat(svg.getAttribute('width') || '0') || parseFloat(vb[2] || '0') || 100;
+  const h = parseFloat(svg.getAttribute('height') || '0') || parseFloat(vb[3] || '0') || 100;
+  return { w, h };
+}
+
 export async function convertToSvg(file: File, padding: ImagePadding): Promise<string> {
   let raw: string;
 
   if (file.type === 'image/svg+xml' || file.name.endsWith('.svg')) {
     const text = await file.text();
-    raw = svgStringToMonochrome(text, padding);
+    if (svgHasEmbeddedRaster(text)) {
+      const blob = new Blob([text], { type: 'image/svg+xml' });
+      const url = URL.createObjectURL(blob);
+      try {
+        raw = await rasterToSvg(url, padding, getSvgIntrinsicSize(text), 8);
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+    } else {
+      raw = svgStringToMonochrome(text, padding);
+    }
   } else {
     const url = URL.createObjectURL(file);
     try {
