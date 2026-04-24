@@ -41,9 +41,14 @@ interface Props {
   onRemove: (id: string) => void;
 }
 
+function padToStrings(p: ImagePadding): Record<keyof ImagePadding, string> {
+  return { top: String(p.top), right: String(p.right), bottom: String(p.bottom), left: String(p.left) };
+}
+
 export function ImageCard({ image, format, retinaScale, onDownload, onPaddingChange, onFillMethodChange, onRename, onRemove }: Props) {
   const originalSize = formatSize(image.originalFile.size);
   const [localPad, setLocalPad] = useState(image.padding);
+  const [padRaw, setPadRaw] = useState(() => padToStrings(image.padding));
   const [editing, setEditing] = useState(false);
   const [nameValue, setNameValue] = useState(image.downloadName);
   const [webpSize, setWebpSize] = useState<number | null>(null);
@@ -89,13 +94,21 @@ export function ImageCard({ image, format, retinaScale, onDownload, onPaddingCha
   };
 
   const handleChange = (side: keyof ImagePadding, value: string) => {
-    const num = Math.max(0, Math.min(40, parseInt(value) || 0));
-    const next = { ...localPad, [side]: num };
-    setLocalPad(next);
+    if (!/^-?\d*$/.test(value)) return;
+    setPadRaw({ ...padRaw, [side]: value });
+    if (value === '' || value === '-') {
+      setLocalPad({ ...localPad, [side]: 0 });
+      return;
+    }
+    const parsed = parseInt(value, 10);
+    const num = Math.max(-40, Math.min(40, parsed));
+    setLocalPad({ ...localPad, [side]: num });
+    if (num !== parsed) setPadRaw({ ...padRaw, [side]: String(num) });
   };
 
   const applyPreset = (preset: PaddingPreset) => {
     setLocalPad(preset.padding);
+    setPadRaw(padToStrings(preset.padding));
     onPaddingChange(image.id, preset.padding);
   };
 
@@ -185,10 +198,9 @@ export function ImageCard({ image, format, retinaScale, onDownload, onPaddingCha
             <label key={side} className={styles.padField}>
               <span className={styles.padSide}>{side[0].toUpperCase()}</span>
               <input
-                type="number"
-                min={0}
-                max={40}
-                value={localPad[side]}
+                type="text"
+                inputMode="numeric"
+                value={padRaw[side]}
                 onChange={(e) => handleChange(side, e.target.value)}
                 className={styles.padInput}
               />
