@@ -55,7 +55,10 @@ export function ImageCard({ image, format, retinaScale, onDownload, onPaddingCha
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    if (editing) inputRef.current?.focus();
+    if (editing) {
+      inputRef.current?.focus();
+      inputRef.current?.select();
+    }
   }, [editing]);
 
   // Compute WebP size when format/retina/svgString changes
