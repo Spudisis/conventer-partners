@@ -30,35 +30,257 @@ const SHAPE_TAGS = new Set([
 
 let maskIdCounter = 0;
 
-export function getDefaultPadding(_w: number, _h: number): ImagePadding {
-  return { top: 0, right: 0, bottom: 0, left: 0 };
+// --- Brand-color tone mapping ------------------------------------------------
+// Everything becomes the brand color. Spatially separate elements (the iris is
+// elsewhere on the canvas, the bars sit apart) are ALL painted the flat brand
+// color — the gaps already separate them. Only when differently-colored regions
+// actually touch inside one connected blob (an iris enclosed by an eye) do we
+// split them into lighter/darker shades of the brand color so the boundary
+// stays visible.
+
+function luma(r: number, g: number, b: number): number {
+  return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
 }
 
-export function getImageDimensions(file: File): Promise<{ w: number; h: number }> {
-  return new Promise((resolve) => {
-    if (file.type === 'image/svg+xml' || file.name.endsWith('.svg')) {
-      file.text().then((text) => {
-        const parser = new DOMParser();
-        const doc = parser.parseFromString(text, 'image/svg+xml');
-        const svg = doc.documentElement;
-        const w = parseFloat(svg.getAttribute('width') || '0') ||
-          parseFloat((svg.getAttribute('viewBox') || '').split(/\s+/)[2] || '0') || 100;
-        const h = parseFloat(svg.getAttribute('height') || '0') ||
-          parseFloat((svg.getAttribute('viewBox') || '').split(/\s+/)[3] || '0') || 100;
-        resolve({ w, h });
-      });
-    } else {
-      const img = new Image();
-      img.onload = () => {
-        resolve({ w: img.naturalWidth, h: img.naturalHeight });
-        URL.revokeObjectURL(img.src);
-      };
-      img.onerror = () => {
-        resolve({ w: 100, h: 100 });
-        URL.revokeObjectURL(img.src);
-      };
-      img.src = URL.createObjectURL(file);
+function rgbToHsl(r: number, g: number, b: number): [number, number, number] {
+  r /= 255; g /= 255; b /= 255;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const l = (max + min) / 2;
+  const d = max - min;
+  if (d === 0) return [0, 0, l];
+  const s = d / (1 - Math.abs(2 * l - 1));
+  let h: number;
+  if (max === r) h = (((g - b) / d) % 6 + 6) % 6;
+  else if (max === g) h = (b - r) / d + 2;
+  else h = (r - g) / d + 4;
+  return [h * 60, s, l];
+}
+
+function hslToRgb(h: number, s: number, l: number): [number, number, number] {
+  const c = (1 - Math.abs(2 * l - 1)) * s;
+  const hp = (h / 60) % 6;
+  const x = c * (1 - Math.abs((hp % 2) - 1));
+  let r = 0, g = 0, b = 0;
+  if (hp < 1) { r = c; g = x; }
+  else if (hp < 2) { r = x; g = c; }
+  else if (hp < 3) { g = c; b = x; }
+  else if (hp < 4) { g = x; b = c; }
+  else if (hp < 5) { r = x; b = c; }
+  else { r = c; b = x; }
+  const m = l - c / 2;
+  return [
+    Math.round((r + m) * 255),
+    Math.round((g + m) * 255),
+    Math.round((b + m) * 255),
+  ];
+}
+
+const BRAND_RGB = hexToRgb(TARGET_COLOR);
+const [BRAND_H, BRAND_S, BRAND_L] = rgbToHsl(...BRAND_RGB);
+
+// A connected blob is multi-toned (gets internal contrast) when its luminance
+// range exceeds this; below it the whole blob is flat brand color.
+const MULTI_TONE_SPREAD = 0.18;
+
+// For multi-toned blobs: the typical (median) tone is pinned to the brand
+// color, and the rest is spread around it by this contrast gain, clamped to the
+// lightness band. This keeps the blob on-brand overall while making detail
+// readable, and stays robust to bright borders/highlights.
+const CONTRAST_GAIN = 1.3;
+const TONE_L_MIN = 0.08;
+const TONE_L_MAX = 0.75;
+
+function brandAtLightness(l: number): [number, number, number] {
+  return hslToRgb(BRAND_H, BRAND_S, Math.max(0, Math.min(1, l)));
+}
+
+// Recolor pixel data in place to the brand palette. Each connected blob of
+// visible pixels is treated as one element: spatially separate blobs all become
+// flat brand color (the gaps already tell them apart), while a blob that mixes
+// clearly different tones (e.g. a colored iris touching a light eye) is split
+// into shades of the brand color so the internal boundary stays visible.
+function recolorToBrandPalette(imageData: ImageData): void {
+  const { data, width, height } = imageData;
+  const n = width * height;
+  const SOLID_ALPHA = 200; // antialiased edge pixels don't drive tone decisions
+
+  const lumaArr = new Float32Array(n);
+  const visible = new Uint8Array(n);
+  for (let p = 0; p < n; p++) {
+    if (data[p * 4 + 3] === 0) continue;
+    visible[p] = 1;
+    lumaArr[p] = luma(data[p * 4], data[p * 4 + 1], data[p * 4 + 2]);
+  }
+
+  // Label connected components of visible pixels (8-connectivity, iterative).
+  const label = new Int32Array(n).fill(-1);
+  const stack = new Int32Array(n);
+  let numComp = 0;
+  for (let start = 0; start < n; start++) {
+    if (!visible[start] || label[start] !== -1) continue;
+    const comp = numComp++;
+    let sp = 0;
+    stack[sp++] = start;
+    label[start] = comp;
+    while (sp > 0) {
+      const p = stack[--sp];
+      const x = p % width;
+      const y = (p / width) | 0;
+      for (let dy = -1; dy <= 1; dy++) {
+        const ny = y + dy;
+        if (ny < 0 || ny >= height) continue;
+        for (let dx = -1; dx <= 1; dx++) {
+          if (dx === 0 && dy === 0) continue;
+          const nx = x + dx;
+          if (nx < 0 || nx >= width) continue;
+          const np = ny * width + nx;
+          if (visible[np] && label[np] === -1) {
+            label[np] = comp;
+            stack[sp++] = np;
+          }
+        }
+      }
     }
+  }
+
+  // Per-component stats from solid pixels: luminance range (for the multi-tone
+  // decision) and a histogram to find the dominant tone (the anchor).
+  const ANCHOR_BINS = 24;
+  const minL = new Float32Array(numComp).fill(1);
+  const maxL = new Float32Array(numComp);
+  const cnt = new Int32Array(numComp);
+  const hist = new Int32Array(numComp * ANCHOR_BINS);
+  for (let p = 0; p < n; p++) {
+    if (!visible[p] || data[p * 4 + 3] < SOLID_ALPHA) continue;
+    const c = label[p];
+    const L = lumaArr[p];
+    if (L < minL[c]) minL[c] = L;
+    if (L > maxL[c]) maxL[c] = L;
+    hist[c * ANCHOR_BINS + Math.min(ANCHOR_BINS - 1, (L * ANCHOR_BINS) | 0)]++;
+    cnt[c]++;
+  }
+
+  // Decide multi-tone blobs and pick each one's typical (median) tone as the
+  // anchor — robust to bright borders/highlights that would otherwise drag the
+  // whole blob dark.
+  const isMulti = new Uint8Array(numComp);
+  const anchorL = new Float32Array(numComp);
+  for (let c = 0; c < numComp; c++) {
+    isMulti[c] = cnt[c] > 0 && maxL[c] - minL[c] > MULTI_TONE_SPREAD ? 1 : 0;
+    const base = c * ANCHOR_BINS;
+    const half = cnt[c] / 2;
+    let acc = 0;
+    let medianBin = 0;
+    for (let b = 0; b < ANCHOR_BINS; b++) {
+      acc += hist[base + b];
+      if (acc >= half) { medianBin = b; break; }
+    }
+    anchorL[c] = (medianBin + 0.5) / ANCHOR_BINS;
+  }
+
+  // Paint: flat brand color for single-tone blobs; for multi-tone blobs, pin
+  // the typical tone to the brand color and spread the rest around it.
+  for (let p = 0; p < n; p++) {
+    if (!visible[p]) continue;
+    const c = label[p];
+    let r: number, g: number, b: number;
+    if (isMulti[c]) {
+      const l = BRAND_L + CONTRAST_GAIN * (lumaArr[p] - anchorL[c]);
+      [r, g, b] = brandAtLightness(Math.max(TONE_L_MIN, Math.min(TONE_L_MAX, l)));
+    } else {
+      [r, g, b] = BRAND_RGB;
+    }
+    data[p * 4] = r;
+    data[p * 4 + 1] = g;
+    data[p * 4 + 2] = b;
+  }
+}
+
+// Padding auto-added (per side) where content sits flush. The card is much
+// shorter than it is wide, so the vertical margin is smaller than the horizontal
+// one — otherwise a top/bottom-flush logo gets shrunk too much.
+const AUTO_PAD_H = 15;
+const AUTO_PAD_V = 7;
+// Content within this fraction of the card edge counts as "(almost) flush".
+const FLUSH_RATIO = 0.06;
+
+// Inspect a file's actual content (non-transparent pixels) and suggest padding:
+// if the content runs (almost) edge-to-edge on an axis once fitted into the
+// card, add a comfortable margin on that axis so it doesn't touch the border.
+export function computeAutoPadding(file: File): Promise<ImagePadding> {
+  const none: ImagePadding = { top: 0, right: 0, bottom: 0, left: 0 };
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => {
+      const natW = img.naturalWidth || 100;
+      const natH = img.naturalHeight || 100;
+      const s = Math.min(1, 400 / Math.max(natW, natH)); // cap analysis resolution
+      const aw = Math.max(1, Math.round(natW * s));
+      const ah = Math.max(1, Math.round(natH * s));
+
+      const canvas = document.createElement('canvas');
+      canvas.width = aw;
+      canvas.height = ah;
+      const ctx = canvas.getContext('2d')!;
+      ctx.drawImage(img, 0, 0, aw, ah);
+      URL.revokeObjectURL(url);
+
+      let data: Uint8ClampedArray;
+      try {
+        data = ctx.getImageData(0, 0, aw, ah).data;
+      } catch {
+        resolve(none);
+        return;
+      }
+
+      // Tight bounding box of visible pixels.
+      let minX = aw, minY = ah, maxX = -1, maxY = -1;
+      for (let y = 0; y < ah; y++) {
+        for (let x = 0; x < aw; x++) {
+          if (data[(y * aw + x) * 4 + 3] > 8) {
+            if (x < minX) minX = x;
+            if (x > maxX) maxX = x;
+            if (y < minY) minY = y;
+            if (y > maxY) maxY = y;
+          }
+        }
+      }
+      if (maxX < 0) {
+        resolve(none); // fully transparent
+        return;
+      }
+
+      // Fit the frame (same aspect as the source) into the card, then measure
+      // the gap between the content and each card edge.
+      const scale = Math.min(TARGET_WIDTH / aw, TARGET_HEIGHT / ah);
+      const offX = (TARGET_WIDTH - aw * scale) / 2;
+      const offY = (TARGET_HEIGHT - ah * scale) / 2;
+      const gapLeft = offX + minX * scale;
+      const gapRight = TARGET_WIDTH - (offX + (maxX + 1) * scale);
+      const gapTop = offY + minY * scale;
+      const gapBottom = TARGET_HEIGHT - (offY + (maxY + 1) * scale);
+
+      const hThresh = TARGET_WIDTH * FLUSH_RATIO;
+      const vThresh = TARGET_HEIGHT * FLUSH_RATIO;
+      const pad: ImagePadding = { top: 0, right: 0, bottom: 0, left: 0 };
+      if (gapLeft < hThresh && gapRight < hThresh) {
+        pad.left = AUTO_PAD_H;
+        pad.right = AUTO_PAD_H;
+      }
+      if (gapTop < vThresh && gapBottom < vThresh) {
+        pad.top = AUTO_PAD_V;
+        pad.bottom = AUTO_PAD_V;
+      }
+      resolve(pad);
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      resolve(none);
+    };
+    img.src = url;
   });
 }
 
@@ -275,11 +497,27 @@ function svgStringToMonochrome(svgText: string, pad: ImagePadding, fillMethod: F
   return wrapInOuter(inner);
 }
 
-function rasterToSvg(
+function fmt(n: number): string {
+  return `${Math.round(n * 1000) / 1000}`;
+}
+
+function hexToRgb(hex: string): [number, number, number] {
+  const h = hex.replace('#', '');
+  return [
+    parseInt(h.slice(0, 2), 16),
+    parseInt(h.slice(2, 4), 16),
+    parseInt(h.slice(4, 6), 16),
+  ];
+}
+
+// Resolution multiplier of the embedded raster relative to the fitted size.
+// 4 matches the maximum 4x retina WebP export, so the result stays sharp.
+const RASTER_RENDER_SCALE = 4;
+
+function rasterToMonochromeSvg(
   imageUrl: string,
   pad: ImagePadding,
   intrinsicSize?: { w: number; h: number },
-  superSample = 1,
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     const img = new Image();
@@ -297,9 +535,8 @@ function rasterToSvg(
       const offsetX = pad.left + (innerW - fitW) / 2;
       const offsetY = pad.top + (innerH - fitH) / 2;
 
-      const canvasW = Math.max(1, Math.round(fitW * superSample));
-      const canvasH = Math.max(1, Math.round(fitH * superSample));
-      const unit = 1 / superSample;
+      const canvasW = Math.max(1, Math.round(fitW * RASTER_RENDER_SCALE));
+      const canvasH = Math.max(1, Math.round(fitH * RASTER_RENDER_SCALE));
 
       const canvas = document.createElement('canvas');
       canvas.width = canvasW;
@@ -310,57 +547,16 @@ function rasterToSvg(
 
       ctx.drawImage(img, 0, 0, canvasW, canvasH);
 
+      // Recolor to the brand palette, keeping alpha so edges stay smooth.
       const imageData = ctx.getImageData(0, 0, canvasW, canvasH);
-      const { data, width, height } = imageData;
+      recolorToBrandPalette(imageData);
+      ctx.putImageData(imageData, 0, 0);
 
-      const rects: string[] = [];
-      const visited = new Uint8Array(width * height);
-      const ALPHA_THRESHOLD = 128;
-
-      const fmt = (n: number) => {
-        const r = Math.round(n * 1000) / 1000;
-        return Number.isInteger(r) ? `${r}` : `${r}`;
-      };
-
-      for (let y = 0; y < height; y++) {
-        for (let x = 0; x < width; x++) {
-          const idx = y * width + x;
-          const alpha = data[idx * 4 + 3];
-          if (alpha < ALPHA_THRESHOLD || visited[idx]) continue;
-
-          let runEnd = x;
-          while (
-            runEnd < width &&
-            data[(y * width + runEnd) * 4 + 3] >= ALPHA_THRESHOLD &&
-            !visited[y * width + runEnd]
-          ) {
-            runEnd++;
-          }
-
-          let rowEnd = y + 1;
-          outer: while (rowEnd < height) {
-            for (let rx = x; rx < runEnd; rx++) {
-              const rIdx = rowEnd * width + rx;
-              if (data[rIdx * 4 + 3] < ALPHA_THRESHOLD || visited[rIdx]) break outer;
-            }
-            rowEnd++;
-          }
-
-          for (let ry = y; ry < rowEnd; ry++) {
-            for (let rx = x; rx < runEnd; rx++) {
-              visited[ry * width + rx] = 1;
-            }
-          }
-
-          const rx = offsetX + x * unit;
-          const ry = offsetY + y * unit;
-          const rw = (runEnd - x) * unit;
-          const rh = (rowEnd - y) * unit;
-          rects.push(`<rect x="${fmt(rx)}" y="${fmt(ry)}" width="${fmt(rw)}" height="${fmt(rh)}"/>`);
-        }
-      }
-
-      const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${TARGET_WIDTH}px" height="${TARGET_HEIGHT}px" viewBox="0 0 ${TARGET_WIDTH} ${TARGET_HEIGHT}" fill="${TARGET_COLOR}">\n${rects.join('\n')}\n</svg>`;
+      const dataUrl = canvas.toDataURL('image/png');
+      const svg =
+        `<svg xmlns="http://www.w3.org/2000/svg" width="${TARGET_WIDTH}px" height="${TARGET_HEIGHT}px" viewBox="0 0 ${TARGET_WIDTH} ${TARGET_HEIGHT}">` +
+        `<image x="${fmt(offsetX)}" y="${fmt(offsetY)}" width="${fmt(fitW)}" height="${fmt(fitH)}" preserveAspectRatio="none" href="${dataUrl}"/>` +
+        `</svg>`;
       resolve(svg);
     };
     img.onerror = () => reject(new Error('Failed to load image'));
@@ -423,29 +619,25 @@ export async function convertToSvg(
   padding: ImagePadding,
   fillMethod: FillMethod = 'default',
 ): Promise<string> {
-  let raw: string;
-
   if (file.type === 'image/svg+xml' || file.name.endsWith('.svg')) {
     const text = await file.text();
     if (svgHasEmbeddedRaster(text)) {
       const blob = new Blob([text], { type: 'image/svg+xml' });
       const url = URL.createObjectURL(blob);
       try {
-        raw = await rasterToSvg(url, padding, getSvgIntrinsicSize(text), 8);
+        // Bulk is a base64 raster — SVGO can't shrink it, so skip minify.
+        return await rasterToMonochromeSvg(url, padding, getSvgIntrinsicSize(text));
       } finally {
         URL.revokeObjectURL(url);
       }
-    } else {
-      raw = svgStringToMonochrome(text, padding, fillMethod);
     }
-  } else {
-    const url = URL.createObjectURL(file);
-    try {
-      raw = await rasterToSvg(url, padding);
-    } finally {
-      URL.revokeObjectURL(url);
-    }
+    return minifySvg(svgStringToMonochrome(text, padding, fillMethod));
   }
 
-  return minifySvg(raw);
+  const url = URL.createObjectURL(file);
+  try {
+    return await rasterToMonochromeSvg(url, padding);
+  } finally {
+    URL.revokeObjectURL(url);
+  }
 }

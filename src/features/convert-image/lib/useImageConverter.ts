@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react';
 import type { ConvertedImage, FillMethod, ImagePadding } from '../../../entities/image/model/types';
-import { convertToSvg, getImageDimensions, getDefaultPadding, isSvgVector } from '../../../shared/lib/imageToSvg';
+import { convertToSvg, computeAutoPadding, isSvgVector } from '../../../shared/lib/imageToSvg';
 
 let counter = 0;
 
@@ -52,11 +52,10 @@ export function useImageConverter() {
 
     accepted.forEach(async (file) => {
       const id = `${++counter}-${file.name}`;
-      const [dims, isVectorSvg] = await Promise.all([
-        getImageDimensions(file),
+      const [isVectorSvg, padding] = await Promise.all([
         isSvgVector(file),
+        computeAutoPadding(file),
       ]);
-      const padding = getDefaultPadding(dims.w, dims.h);
       const fillMethod: FillMethod = 'default';
 
       const baseName = file.name.replace(/\.[^.]+$/, '');
