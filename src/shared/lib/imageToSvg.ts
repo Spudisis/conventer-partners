@@ -197,6 +197,122 @@ function recolorToBrandPalette(imageData: ImageData): void {
   }
 }
 
+// --- Background removal ------------------------------------------------------
+// Raster logos often arrive sitting on a solid card/background (a white box, a
+// coloured panel, …). We key that background out so the exported asset is
+// transparent instead of a filled rectangle. Detection is deliberately
+// conservative: a background is only removed when the image border is dominated
+// by one uniform, opaque colour. Busy / full-bleed artwork and logos that are
+// already transparent are left untouched. Removal is colour-distance based
+// (global, not a flood fill from the edge) so the enclosed holes inside letters
+// become transparent too, with a feathered band so anti-aliased edges stay soft.
+
+const BG_KEY_LOW = 26; // pixels within this RGB distance of the bg are fully cleared
+const BG_KEY_HIGH = 64; // beyond this they are fully kept; the band between is feathered
+const BG_BORDER_TOL = 42; // a ring pixel counts as "background-coloured" within this
+const BG_BORDER_MATCH = 0.85; // share of opaque ring pixels that must agree on the colour
+const BG_BORDER_OPAQUE = 0.5; // share of the ring that must be opaque to bother looking
+const BG_MIN_FOREGROUND = 0.004; // need at least this share of content unlike the bg, else
+                                 // the "background" IS the subject (a solid icon) — leave it
+
+const ALPHA_OPAQUE = 128;
+
+function colorDist(
+  r1: number, g1: number, b1: number,
+  r2: number, g2: number, b2: number,
+): number {
+  const dr = r1 - r2, dg = g1 - g2, db = b1 - b2;
+  return Math.sqrt(dr * dr + dg * dg + db * db);
+}
+
+function removeBackground(imageData: ImageData): void {
+  const { data, width, height } = imageData;
+  if (width < 3 || height < 3) return;
+
+  // The artwork rarely fills the whole canvas — exported SVGs clip/inset it, so
+  // the real edges are transparent. Find the bounding box of the opaque content
+  // (the card/box + logo) and sample the background from inside *that*, not the
+  // canvas border.
+  let minX = width, minY = height, maxX = -1, maxY = -1;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      if (data[(y * width + x) * 4 + 3] >= ALPHA_OPAQUE) {
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+  if (maxX < 0) return; // nothing opaque
+  const bw = maxX - minX + 1, bh = maxY - minY + 1;
+  if (bw < 3 || bh < 3) return;
+
+  // A ring just inside the content box — a couple percent thick, but at least a
+  // pixel. A genuine background fills this ring with one uniform colour.
+  const ring = Math.max(1, Math.round(Math.min(bw, bh) * 0.04));
+  const onRing = (x: number, y: number) =>
+    x >= minX && x <= maxX && y >= minY && y <= maxY &&
+    (x < minX + ring || x > maxX - ring || y < minY + ring || y > maxY - ring);
+
+  // Average colour of the opaque ring pixels — our background estimate.
+  let sumR = 0, sumG = 0, sumB = 0, opaque = 0, total = 0;
+  for (let y = minY; y <= maxY; y++) {
+    for (let x = minX; x <= maxX; x++) {
+      if (!onRing(x, y)) continue;
+      total++;
+      const i = (y * width + x) * 4;
+      if (data[i + 3] < ALPHA_OPAQUE) continue;
+      opaque++;
+      sumR += data[i]; sumG += data[i + 1]; sumB += data[i + 2];
+    }
+  }
+  if (total === 0 || opaque / total < BG_BORDER_OPAQUE) return; // ring not a solid fill
+
+  const bgR = sumR / opaque, bgG = sumG / opaque, bgB = sumB / opaque;
+
+  // Only proceed if the ring is genuinely uniform (one background colour),
+  // otherwise we'd be punching holes in real artwork.
+  let match = 0;
+  for (let y = minY; y <= maxY; y++) {
+    for (let x = minX; x <= maxX; x++) {
+      if (!onRing(x, y)) continue;
+      const i = (y * width + x) * 4;
+      if (data[i + 3] < ALPHA_OPAQUE) continue;
+      if (colorDist(data[i], data[i + 1], data[i + 2], bgR, bgG, bgB) <= BG_BORDER_TOL) match++;
+    }
+  }
+  if (match / opaque < BG_BORDER_MATCH) return; // no clear single-colour background
+
+  // Guard: make sure there's an actual subject sitting on this background. If
+  // almost every opaque pixel matches the ring colour, the "background" is the
+  // whole image (e.g. a solid filled icon) — removing it would erase everything.
+  let contentOpaque = 0, foreground = 0;
+  const n = width * height;
+  for (let p = 0; p < n; p++) {
+    const i = p * 4;
+    if (data[i + 3] < ALPHA_OPAQUE) continue;
+    contentOpaque++;
+    if (colorDist(data[i], data[i + 1], data[i + 2], bgR, bgG, bgB) >= BG_KEY_HIGH) foreground++;
+  }
+  if (contentOpaque === 0 || foreground / contentOpaque < BG_MIN_FOREGROUND) return;
+
+  // Clear the background colour wherever it appears (globally, so the holes
+  // inside letters go transparent too), feathering the transition band so the
+  // logo's anti-aliased edges don't turn jagged.
+  const span = BG_KEY_HIGH - BG_KEY_LOW;
+  for (let p = 0; p < n; p++) {
+    const i = p * 4;
+    if (data[i + 3] === 0) continue;
+    const d = colorDist(data[i], data[i + 1], data[i + 2], bgR, bgG, bgB);
+    if (d <= BG_KEY_LOW) {
+      data[i + 3] = 0;
+    } else if (d < BG_KEY_HIGH) {
+      data[i + 3] = Math.round(data[i + 3] * ((d - BG_KEY_LOW) / span));
+    }
+  }
+}
+
 // Padding auto-added (per side) where content sits flush. The card is much
 // shorter than it is wide, so the vertical margin is smaller than the horizontal
 // one — otherwise a top/bottom-flush logo gets shrunk too much.
@@ -547,8 +663,11 @@ function rasterToMonochromeSvg(
 
       ctx.drawImage(img, 0, 0, canvasW, canvasH);
 
-      // Recolor to the brand palette, keeping alpha so edges stay smooth.
+      // Drop a solid background (white card, coloured panel, …) so the export is
+      // transparent, then recolor what remains to the brand palette, keeping
+      // alpha so edges stay smooth.
       const imageData = ctx.getImageData(0, 0, canvasW, canvasH);
+      removeBackground(imageData);
       recolorToBrandPalette(imageData);
       ctx.putImageData(imageData, 0, 0);
 
