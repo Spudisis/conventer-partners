@@ -30,170 +30,61 @@ const SHAPE_TAGS = new Set([
 
 let maskIdCounter = 0;
 
-// --- Brand-color tone mapping ------------------------------------------------
-// Everything becomes the brand color. Spatially separate elements (the iris is
-// elsewhere on the canvas, the bars sit apart) are ALL painted the flat brand
-// color — the gaps already separate them. Only when differently-colored regions
-// actually touch inside one connected blob (an iris enclosed by an eye) do we
-// split them into lighter/darker shades of the brand color so the boundary
-// stays visible.
+// --- Brand-color recolor -----------------------------------------------------
+// The rule is deliberately simple and predictable: the coloured/dark artwork is
+// painted the flat brand color, while near-white areas become fully transparent
+// — "no colour there". That white isn't just the outer background: it's also the
+// white counter of a letter knocked into a coloured tile (the "iD" in IP DEEP),
+// and the white gap a logo leaves between a stroke and its keyline. Those read
+// as transparent against their colour, so we clear them instead of tinting them
+// a light shade. We only knock white out when there's a real coloured/dark
+// subject to keep — an all-white logo is painted brand rather than vanishing.
+
+const BRAND_RGB = hexToRgb(TARGET_COLOR);
 
 function luma(r: number, g: number, b: number): number {
   return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
 }
 
-function rgbToHsl(r: number, g: number, b: number): [number, number, number] {
-  r /= 255; g /= 255; b /= 255;
-  const max = Math.max(r, g, b);
-  const min = Math.min(r, g, b);
-  const l = (max + min) / 2;
-  const d = max - min;
-  if (d === 0) return [0, 0, l];
-  const s = d / (1 - Math.abs(2 * l - 1));
-  let h: number;
-  if (max === r) h = (((g - b) / d) % 6 + 6) % 6;
-  else if (max === g) h = (b - r) / d + 2;
-  else h = (r - g) / d + 4;
-  return [h * 60, s, l];
-}
+// Luminance band for the white knockout: at/under LO a pixel is solid subject,
+// at/over HI it's cleared, and the gap between is feathered so cut-out edges
+// stay smooth.
+const WHITE_KNOCKOUT_LO = 0.78;
+const WHITE_KNOCKOUT_HI = 0.92;
+// Need at least this share of (opaque) pixels to be non-white before we treat
+// white as something to remove rather than as the subject itself.
+const WHITE_MIN_SUBJECT = 0.01;
 
-function hslToRgb(h: number, s: number, l: number): [number, number, number] {
-  const c = (1 - Math.abs(2 * l - 1)) * s;
-  const hp = (h / 60) % 6;
-  const x = c * (1 - Math.abs((hp % 2) - 1));
-  let r = 0, g = 0, b = 0;
-  if (hp < 1) { r = c; g = x; }
-  else if (hp < 2) { r = x; g = c; }
-  else if (hp < 3) { g = c; b = x; }
-  else if (hp < 4) { g = x; b = c; }
-  else if (hp < 5) { r = x; b = c; }
-  else { r = c; b = x; }
-  const m = l - c / 2;
-  return [
-    Math.round((r + m) * 255),
-    Math.round((g + m) * 255),
-    Math.round((b + m) * 255),
-  ];
-}
-
-const BRAND_RGB = hexToRgb(TARGET_COLOR);
-const [BRAND_H, BRAND_S, BRAND_L] = rgbToHsl(...BRAND_RGB);
-
-// A connected blob is multi-toned (gets internal contrast) when its luminance
-// range exceeds this; below it the whole blob is flat brand color.
-const MULTI_TONE_SPREAD = 0.18;
-
-// For multi-toned blobs: the typical (median) tone is pinned to the brand
-// color, and the rest is spread around it by this contrast gain, clamped to the
-// lightness band. This keeps the blob on-brand overall while making detail
-// readable, and stays robust to bright borders/highlights.
-const CONTRAST_GAIN = 1.3;
-const TONE_L_MIN = 0.08;
-const TONE_L_MAX = 0.75;
-
-function brandAtLightness(l: number): [number, number, number] {
-  return hslToRgb(BRAND_H, BRAND_S, Math.max(0, Math.min(1, l)));
-}
-
-// Recolor pixel data in place to the brand palette. Each connected blob of
-// visible pixels is treated as one element: spatially separate blobs all become
-// flat brand color (the gaps already tell them apart), while a blob that mixes
-// clearly different tones (e.g. a colored iris touching a light eye) is split
-// into shades of the brand color so the internal boundary stays visible.
 function recolorToBrandPalette(imageData: ImageData): void {
-  const { data, width, height } = imageData;
-  const n = width * height;
-  const SOLID_ALPHA = 200; // antialiased edge pixels don't drive tone decisions
+  const { data } = imageData;
+  const n = data.length / 4;
 
-  const lumaArr = new Float32Array(n);
-  const visible = new Uint8Array(n);
+  // Is there a coloured/dark subject, or is the artwork essentially all white?
+  let opaque = 0, subject = 0;
   for (let p = 0; p < n; p++) {
-    if (data[p * 4 + 3] === 0) continue;
-    visible[p] = 1;
-    lumaArr[p] = luma(data[p * 4], data[p * 4 + 1], data[p * 4 + 2]);
+    if (data[p * 4 + 3] < 200) continue; // ignore anti-aliased edges here
+    opaque++;
+    if (luma(data[p * 4], data[p * 4 + 1], data[p * 4 + 2]) <= WHITE_KNOCKOUT_LO) subject++;
   }
+  const knockoutWhite = opaque > 0 && subject / opaque >= WHITE_MIN_SUBJECT;
 
-  // Label connected components of visible pixels (8-connectivity, iterative).
-  const label = new Int32Array(n).fill(-1);
-  const stack = new Int32Array(n);
-  let numComp = 0;
-  for (let start = 0; start < n; start++) {
-    if (!visible[start] || label[start] !== -1) continue;
-    const comp = numComp++;
-    let sp = 0;
-    stack[sp++] = start;
-    label[start] = comp;
-    while (sp > 0) {
-      const p = stack[--sp];
-      const x = p % width;
-      const y = (p / width) | 0;
-      for (let dy = -1; dy <= 1; dy++) {
-        const ny = y + dy;
-        if (ny < 0 || ny >= height) continue;
-        for (let dx = -1; dx <= 1; dx++) {
-          if (dx === 0 && dy === 0) continue;
-          const nx = x + dx;
-          if (nx < 0 || nx >= width) continue;
-          const np = ny * width + nx;
-          if (visible[np] && label[np] === -1) {
-            label[np] = comp;
-            stack[sp++] = np;
-          }
-        }
+  const span = WHITE_KNOCKOUT_HI - WHITE_KNOCKOUT_LO;
+  for (let p = 0; p < n; p++) {
+    const i = p * 4;
+    if (data[i + 3] === 0) continue;
+    if (knockoutWhite) {
+      const L = luma(data[i], data[i + 1], data[i + 2]);
+      if (L >= WHITE_KNOCKOUT_HI) {
+        data[i + 3] = 0; // white area → no colour
+        continue;
+      }
+      if (L > WHITE_KNOCKOUT_LO) {
+        data[i + 3] = Math.round(data[i + 3] * (1 - (L - WHITE_KNOCKOUT_LO) / span));
       }
     }
-  }
-
-  // Per-component stats from solid pixels: luminance range (for the multi-tone
-  // decision) and a histogram to find the dominant tone (the anchor).
-  const ANCHOR_BINS = 24;
-  const minL = new Float32Array(numComp).fill(1);
-  const maxL = new Float32Array(numComp);
-  const cnt = new Int32Array(numComp);
-  const hist = new Int32Array(numComp * ANCHOR_BINS);
-  for (let p = 0; p < n; p++) {
-    if (!visible[p] || data[p * 4 + 3] < SOLID_ALPHA) continue;
-    const c = label[p];
-    const L = lumaArr[p];
-    if (L < minL[c]) minL[c] = L;
-    if (L > maxL[c]) maxL[c] = L;
-    hist[c * ANCHOR_BINS + Math.min(ANCHOR_BINS - 1, (L * ANCHOR_BINS) | 0)]++;
-    cnt[c]++;
-  }
-
-  // Decide multi-tone blobs and pick each one's typical (median) tone as the
-  // anchor — robust to bright borders/highlights that would otherwise drag the
-  // whole blob dark.
-  const isMulti = new Uint8Array(numComp);
-  const anchorL = new Float32Array(numComp);
-  for (let c = 0; c < numComp; c++) {
-    isMulti[c] = cnt[c] > 0 && maxL[c] - minL[c] > MULTI_TONE_SPREAD ? 1 : 0;
-    const base = c * ANCHOR_BINS;
-    const half = cnt[c] / 2;
-    let acc = 0;
-    let medianBin = 0;
-    for (let b = 0; b < ANCHOR_BINS; b++) {
-      acc += hist[base + b];
-      if (acc >= half) { medianBin = b; break; }
-    }
-    anchorL[c] = (medianBin + 0.5) / ANCHOR_BINS;
-  }
-
-  // Paint: flat brand color for single-tone blobs; for multi-tone blobs, pin
-  // the typical tone to the brand color and spread the rest around it.
-  for (let p = 0; p < n; p++) {
-    if (!visible[p]) continue;
-    const c = label[p];
-    let r: number, g: number, b: number;
-    if (isMulti[c]) {
-      const l = BRAND_L + CONTRAST_GAIN * (lumaArr[p] - anchorL[c]);
-      [r, g, b] = brandAtLightness(Math.max(TONE_L_MIN, Math.min(TONE_L_MAX, l)));
-    } else {
-      [r, g, b] = BRAND_RGB;
-    }
-    data[p * 4] = r;
-    data[p * 4 + 1] = g;
-    data[p * 4 + 2] = b;
+    data[i] = BRAND_RGB[0];
+    data[i + 1] = BRAND_RGB[1];
+    data[i + 2] = BRAND_RGB[2];
   }
 }
 
@@ -626,14 +517,17 @@ function hexToRgb(hex: string): [number, number, number] {
   ];
 }
 
-// Resolution multiplier of the embedded raster relative to the fitted size.
-// 4 matches the maximum 4x retina WebP export, so the result stays sharp.
-const RASTER_RENDER_SCALE = 4;
+// At least this many rendered pixels per fitted user-unit — matches a 4x retina
+// WebP export, so even small sources stay crisp.
+const MIN_RENDER_SCALE = 4;
+// Hard cap on the rendered raster's longest edge, to bound memory.
+const MAX_RENDER_DIM = 2400;
 
 function rasterToMonochromeSvg(
   imageUrl: string,
   pad: ImagePadding,
   intrinsicSize?: { w: number; h: number },
+  nativePx?: { w: number; h: number },
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     const img = new Image();
@@ -651,8 +545,20 @@ function rasterToMonochromeSvg(
       const offsetX = pad.left + (innerW - fitW) / 2;
       const offsetY = pad.top + (innerH - fitH) / 2;
 
-      const canvasW = Math.max(1, Math.round(fitW * RASTER_RENDER_SCALE));
-      const canvasH = Math.max(1, Math.round(fitH * RASTER_RENDER_SCALE));
+      // Render at the source's own resolution where we can: an SVG that embeds a
+      // 1383px raster shouldn't be squashed to 712px just because it's fitted
+      // into a small box. Take the larger of the retina floor and the source's
+      // native pixel density, capped so we never blow up memory.
+      const nativeW = nativePx?.w || img.naturalWidth || fitW;
+      const nativeH = nativePx?.h || img.naturalHeight || fitH;
+      const nativeScale = Math.max(nativeW / fitW, nativeH / fitH);
+      const renderScale = Math.min(
+        Math.max(MIN_RENDER_SCALE, nativeScale),
+        MAX_RENDER_DIM / Math.max(fitW, fitH),
+      );
+
+      const canvasW = Math.max(1, Math.round(fitW * renderScale));
+      const canvasH = Math.max(1, Math.round(fitH * renderScale));
 
       const canvas = document.createElement('canvas');
       canvas.width = canvasW;
@@ -716,6 +622,27 @@ function svgHasEmbeddedRaster(svgText: string): boolean {
   return false;
 }
 
+// The largest embedded raster's native pixel size — its real resolution, which
+// is what we should render at rather than the SVG's (much smaller) layout size.
+function getSvgRasterPixelSize(svgText: string): { w: number; h: number } | null {
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(svgText, 'image/svg+xml');
+  const images = doc.documentElement.getElementsByTagName('image');
+  let w = 0, h = 0;
+  for (let i = 0; i < images.length; i++) {
+    const href =
+      images[i].getAttribute('href') ||
+      images[i].getAttributeNS('http://www.w3.org/1999/xlink', 'href') ||
+      '';
+    if (!/^data:image\/[^;]+;base64,/i.test(href)) continue;
+    const iw = parseFloat(images[i].getAttribute('width') || '0');
+    const ih = parseFloat(images[i].getAttribute('height') || '0');
+    if (iw > w) w = iw;
+    if (ih > h) h = ih;
+  }
+  return w > 0 && h > 0 ? { w, h } : null;
+}
+
 function getSvgIntrinsicSize(svgText: string): { w: number; h: number } {
   const parser = new DOMParser();
   const doc = parser.parseFromString(svgText, 'image/svg+xml');
@@ -745,7 +672,12 @@ export async function convertToSvg(
       const url = URL.createObjectURL(blob);
       try {
         // Bulk is a base64 raster — SVGO can't shrink it, so skip minify.
-        return await rasterToMonochromeSvg(url, padding, getSvgIntrinsicSize(text));
+        return await rasterToMonochromeSvg(
+          url,
+          padding,
+          getSvgIntrinsicSize(text),
+          getSvgRasterPixelSize(text) ?? undefined,
+        );
       } finally {
         URL.revokeObjectURL(url);
       }

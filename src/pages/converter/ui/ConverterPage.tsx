@@ -18,7 +18,7 @@ export function ConverterPage() {
   const { images, addFiles, updatePadding, updateFillMethod, rename, remove, clearAll } = useImageConverter();
   const doneCount = images.filter((i) => i.status === 'done').length;
   const [format, setFormat] = useState<ExportFormat>('webp');
-  const [retinaScale, setRetinaScale] = useState(2);
+  const [retinaScale, setRetinaScale] = useState(3);
 
   const handleDownload = (image: Parameters<typeof downloadSingle>[0]) => {
     if (format === 'svg') downloadSingle(image);
