@@ -22,12 +22,12 @@ export function ConverterPage() {
 
   const handleDownload = (image: Parameters<typeof downloadSingle>[0]) => {
     if (format === 'svg') downloadSingle(image);
-    else downloadSingleWebp(image, retinaScale);
+    else downloadSingleWebp(image, retinaScale).catch(() => alert('WebP export failed for this image'));
   };
 
   const handleDownloadAll = () => {
     if (format === 'svg') downloadAll(images);
-    else downloadAllWebp(images, retinaScale);
+    else downloadAllWebp(images, retinaScale).catch(() => alert('WebP export failed'));
   };
 
   return (

@@ -478,11 +478,27 @@ function applyCutout(svg: Element): { inner: string; defs: string; gAttrs: strin
   return { inner: paintedInner, defs: maskEl, gAttrs: `mask="url(#${maskId})"` };
 }
 
+// <foreignObject> taints a canvas in Chromium even when drawn from a same-origin
+// blob, which makes the later WebP export (canvas.toBlob) throw a SecurityError.
+// Non-data hrefs (external URLs, blob:) never load in <img> context anyway, so
+// dropping them loses nothing visible.
+function sanitizeSvgForCanvas(svg: Element): void {
+  svg.querySelectorAll('foreignObject, script').forEach((el) => el.remove());
+  svg.querySelectorAll('image, use').forEach((el) => {
+    const href =
+      el.getAttribute('href') ||
+      el.getAttributeNS('http://www.w3.org/1999/xlink', 'href') ||
+      '';
+    if (href && !href.startsWith('#') && !href.startsWith('data:')) el.remove();
+  });
+}
+
 function svgStringToMonochrome(svgText: string, pad: ImagePadding, fillMethod: FillMethod): string {
   const parser = new DOMParser();
   const doc = parser.parseFromString(svgText, 'image/svg+xml');
   const svg = doc.documentElement;
 
+  sanitizeSvgForCanvas(svg);
   fitSvg(svg, pad);
 
   if (fillMethod === 'cutout') {
