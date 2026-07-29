@@ -493,11 +493,60 @@ function sanitizeSvgForCanvas(svg: Element): void {
   });
 }
 
+// Colors declared in <style> blocks (`.cls-1 { fill: #fff }`) are invisible to
+// the attribute-based recolor pass, and a class rule outranks any fill/stroke
+// presentation attribute we set later — so the artwork stays its original
+// color. Inline those declarations onto the matching elements (existing inline
+// styles keep priority) and drop the <style> blocks.
+function inlineStyleElements(svg: Element): void {
+  const styleEls = Array.from(svg.querySelectorAll('style'));
+  if (styleEls.length === 0) return;
+
+  const collected = new Map<Element, Map<string, string>>();
+  for (const styleEl of styleEls) {
+    const css = (styleEl.textContent || '').replace(/\/\*[\s\S]*?\*\//g, '');
+    const ruleRe = /([^{}]+)\{([^{}]*)\}/g;
+    let m: RegExpExecArray | null;
+    while ((m = ruleRe.exec(css))) {
+      const selector = m[1].trim();
+      if (!selector || selector.startsWith('@')) continue;
+      let targets: NodeListOf<Element>;
+      try {
+        targets = svg.querySelectorAll(selector);
+      } catch {
+        continue;
+      }
+      const declarations = m[2];
+      targets.forEach((el) => {
+        let props = collected.get(el);
+        if (!props) collected.set(el, (props = new Map()));
+        for (const decl of declarations.split(';')) {
+          const colon = decl.indexOf(':');
+          if (colon === -1) continue;
+          const prop = decl.slice(0, colon).trim();
+          const value = decl.slice(colon + 1).trim();
+          if (prop && value) props.set(prop, value);
+        }
+      });
+    }
+    styleEl.remove();
+  }
+
+  collected.forEach((props, el) => {
+    const fromCss = Array.from(props, ([p, v]) => `${p}: ${v}`).join('; ');
+    const existing = el.getAttribute('style');
+    // Existing inline declarations go last so they win over the class rules,
+    // matching CSS priority.
+    el.setAttribute('style', existing ? `${fromCss}; ${existing}` : fromCss);
+  });
+}
+
 function svgStringToMonochrome(svgText: string, pad: ImagePadding, fillMethod: FillMethod): string {
   const parser = new DOMParser();
   const doc = parser.parseFromString(svgText, 'image/svg+xml');
   const svg = doc.documentElement;
 
+  inlineStyleElements(svg);
   sanitizeSvgForCanvas(svg);
   fitSvg(svg, pad);
 
