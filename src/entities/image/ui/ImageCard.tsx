@@ -47,6 +47,7 @@ function padToStrings(p: ImagePadding): Record<keyof ImagePadding, string> {
 
 export function ImageCard({ image, format, retinaScale, onDownload, onPaddingChange, onFillMethodChange, onRename, onRemove }: Props) {
   const originalSize = formatSize(image.originalFile.size);
+
   const [localPad, setLocalPad] = useState(image.padding);
   const [padRaw, setPadRaw] = useState(() => padToStrings(image.padding));
   const [editing, setEditing] = useState(false);
